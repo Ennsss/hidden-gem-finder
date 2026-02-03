@@ -2,5 +2,6 @@
 
 from .base_scraper import BaseScraper
 from .fbref_scraper import FBrefScraper
+from .transfermarkt_scraper import TransfermarktScraper
 
-__all__ = ["BaseScraper", "FBrefScraper"]
+__all__ = ["BaseScraper", "FBrefScraper", "TransfermarktScraper"]

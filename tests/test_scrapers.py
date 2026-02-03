@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.scrapers import BaseScraper, FBrefScraper
+from src.scrapers import BaseScraper, FBrefScraper, TransfermarktScraper
 
 
 class TestBaseScraper:
@@ -309,6 +309,128 @@ class TestFBrefScraperIntegration:
             include_defense=False,
             include_possession=False,
         )
+
+        assert len(players) > 0
+        assert all("name" in p for p in players)
+        assert all("player_id" in p for p in players)
+
+
+class TestTransfermarktScraper:
+    """Tests for Transfermarkt scraper."""
+
+    @pytest.fixture
+    def scraper(self, tmp_path):
+        """Create a scraper instance for testing."""
+        return TransfermarktScraper(cache_dir=tmp_path, rate_limit=0)
+
+    @pytest.fixture
+    def league_html(self):
+        """Load the league players fixture."""
+        fixture_path = Path(__file__).parent / "fixtures" / "transfermarkt_league.html"
+        return fixture_path.read_text(encoding="utf-8")
+
+    def test_source_name(self, scraper):
+        """Test that source name is correct."""
+        assert scraper.source_name == "transfermarkt"
+
+    def test_league_ids_defined(self, scraper):
+        """Test that league IDs are defined."""
+        assert "eredivisie" in scraper.LEAGUE_IDS
+        assert "championship" in scraper.LEAGUE_IDS
+        assert "premier-league" in scraper.LEAGUE_IDS
+
+    def test_parse_market_value(self, scraper):
+        """Test market value parsing."""
+        assert scraper._parse_market_value("€25.00m") == 25_000_000
+        assert scraper._parse_market_value("€500k") == 500_000
+        assert scraper._parse_market_value("€1.50m") == 1_500_000
+        assert scraper._parse_market_value("€800k") == 800_000
+        assert scraper._parse_market_value("-") is None
+        assert scraper._parse_market_value(None) is None
+
+    def test_extract_player_id(self, scraper):
+        """Test player ID extraction."""
+        url = "/cody-gakpo/profil/spieler/363205"
+        assert scraper._extract_player_id(url) == "363205"
+        assert scraper._extract_player_id(None) is None
+        assert scraper._extract_player_id("/invalid/url") is None
+
+    def test_extract_player_slug(self, scraper):
+        """Test player slug extraction."""
+        url = "/cody-gakpo/profil/spieler/363205"
+        assert scraper._extract_player_slug(url) == "cody-gakpo"
+        assert scraper._extract_player_slug(None) is None
+
+    def test_parse_date(self, scraper):
+        """Test date parsing."""
+        assert scraper._parse_date("Jan 1, 2000") == "2000-01-01"
+        assert scraper._parse_date("1.1.2000") == "2000-01-01"
+        assert scraper._parse_date("2000-01-01") == "2000-01-01"
+        assert scraper._parse_date("-") is None
+        assert scraper._parse_date(None) is None
+
+    def test_parse_league_players_page(self, scraper, league_html):
+        """Test parsing of league players page."""
+        players = scraper._parse_league_players_page(
+            league_html, "eredivisie", "2023-2024"
+        )
+
+        assert len(players) == 5
+
+        # Check Cody Gakpo
+        gakpo = next(p for p in players if p["name"] == "Cody Gakpo")
+        assert gakpo["player_id"] == "363205"
+        assert gakpo["player_slug"] == "cody-gakpo"
+        assert gakpo["position"] == "Left Winger"
+        assert gakpo["age"] == 23
+        assert gakpo["market_value_eur"] == 45_000_000
+        assert gakpo["team"] == "PSV Eindhoven"
+        assert gakpo["league"] == "eredivisie"
+        assert gakpo["season"] == "2023-2024"
+
+        # Check Xavi Simons
+        xavi = next(p for p in players if p["name"] == "Xavi Simons")
+        assert xavi["player_id"] == "533869"
+        assert xavi["market_value_eur"] == 50_000_000
+        assert xavi["position"] == "Attacking Midfield"
+
+        # Check budget player (€800k)
+        budget = next(p for p in players if p["name"] == "Budget Player")
+        assert budget["market_value_eur"] == 800_000
+
+    def test_build_league_url(self, scraper):
+        """Test URL building."""
+        url = scraper._build_league_players_url("eredivisie", "2023-2024")
+        assert "transfermarkt.com" in url
+        assert "NL1" in url
+        assert "2023" in url
+
+    def test_unknown_league_raises_error(self, scraper):
+        """Test that unknown league raises ValueError."""
+        with pytest.raises(ValueError, match="Unknown league"):
+            scraper.scrape_league_season("fake-league", "2023-2024")
+
+    @patch.object(TransfermarktScraper, "fetch")
+    def test_scrape_league_season(self, mock_fetch, scraper, league_html):
+        """Test full league season scraping with mocked requests."""
+        # First call returns data, second returns empty (no more pages)
+        mock_fetch.side_effect = [league_html, "<html><body></body></html>"]
+
+        players = scraper.scrape_league_season("eredivisie", "2023-2024", max_pages=2)
+
+        assert len(players) == 5
+        assert all(p["source"] == "transfermarkt" for p in players)
+        assert all(p["league"] == "eredivisie" for p in players)
+
+
+class TestTransfermarktIntegration:
+    """Integration tests for Transfermarkt scraper."""
+
+    @pytest.mark.skip(reason="Integration test - hits real API")
+    def test_real_eredivisie_scrape(self, tmp_path):
+        """Test scraping real Eredivisie data."""
+        scraper = TransfermarktScraper(cache_dir=tmp_path, rate_limit=5)
+        players = scraper.scrape_league_season("eredivisie", "2023-2024", max_pages=1)
 
         assert len(players) > 0
         assert all("name" in p for p in players)
