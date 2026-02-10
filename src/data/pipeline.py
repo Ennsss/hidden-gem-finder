@@ -1,11 +1,13 @@
 """Data pipeline for orchestrating scraping from all sources."""
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 from tqdm import tqdm
 
 from src.scrapers import FBrefScraper, TransfermarktScraper, UnderstatScraper
@@ -408,6 +410,101 @@ class DataPipeline:
             Dictionary with database statistics
         """
         return self.db.get_stats()
+
+    def run_phase2(self, output_dir: str | Path = "data/processed") -> dict:
+        """Run full Phase 2 pipeline: clean → match → label → engineer → select.
+
+        Args:
+            output_dir: Directory to save output parquet files
+
+        Returns:
+            Dictionary with step results and output file paths
+        """
+        from src.data.cleaning import clean_fbref_data
+        from src.data.labeling import create_temporal_splits, generate_labels, validate_no_leakage
+        from src.data.matching import enrich_from_sources
+        from src.features.engineering import engineer_features
+        from src.features.selection import select_features
+
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        results = {}
+
+        # Step 1: Clean
+        logger.info("Phase 2 Step 1: Cleaning FBref data...")
+        cleaned_df, clean_result = clean_fbref_data(self.db)
+        results["cleaning"] = str(clean_result)
+        logger.info(f"Cleaning complete: {clean_result.final_count} records")
+
+        if cleaned_df.empty:
+            logger.warning("No data after cleaning. Aborting Phase 2.")
+            return results
+
+        # Step 2: Match and enrich
+        logger.info("Phase 2 Step 2: Matching cross-source data...")
+        enriched_df, match_result = enrich_from_sources(self.db, cleaned_df)
+        results["matching"] = str(match_result)
+        enriched_df.to_parquet(output_path / "players_enriched.parquet", index=False)
+        logger.info(f"Matching complete: {match_result.tm_matched} TM, {match_result.understat_matched} US matches")
+
+        # Step 3: Label
+        logger.info("Phase 2 Step 3: Generating breakout labels...")
+        labeled_df, label_result = generate_labels(self.db, enriched_df)
+        results["labeling"] = str(label_result)
+        labeled_df.to_parquet(output_path / "players_labeled.parquet", index=False)
+        logger.info(f"Labeling complete: {label_result.positive_labels} positives ({label_result.positive_rate:.1%})")
+
+        if labeled_df.empty:
+            logger.warning("No labeled data. Aborting remaining steps.")
+            return results
+
+        # Step 4: Engineer features
+        logger.info("Phase 2 Step 4: Engineering features...")
+        features_df, feat_result = engineer_features(labeled_df)
+        results["engineering"] = str(feat_result)
+
+        # Step 5: Select features
+        logger.info("Phase 2 Step 5: Selecting features...")
+        final_df, sel_result = select_features(features_df)
+        results["selection"] = str(sel_result)
+        final_df.to_parquet(output_path / "features_final.parquet", index=False)
+
+        # Save feature metadata
+        numeric_cols = [
+            c for c in final_df.select_dtypes(include=["number"]).columns
+            if c not in {"label", "age", "birth_year"}
+        ]
+        metadata = {
+            "feature_names": sorted(numeric_cols),
+            "n_features": len(numeric_cols),
+            "n_rows": len(final_df),
+            "positive_rate": float(label_result.positive_rate),
+            "correlated_removed": sel_result.correlated_removed,
+            "low_variance_removed": sel_result.low_variance_removed,
+        }
+        with open(output_path / "feature_metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+
+        # Step 6: Create temporal splits
+        logger.info("Phase 2 Step 6: Creating temporal splits...")
+        splits = create_temporal_splits(final_df)
+        leakage_warnings = validate_no_leakage(splits)
+        if leakage_warnings:
+            for w in leakage_warnings:
+                logger.warning(f"LEAKAGE: {w}")
+            results["leakage_warnings"] = leakage_warnings
+
+        for fold_name, fold_data in splits.items():
+            for split_name, split_df in fold_data.items():
+                fname = f"{fold_name}_{split_name}.parquet"
+                split_df.to_parquet(output_path / fname, index=False)
+
+        results["folds"] = len(splits)
+        results["output_dir"] = str(output_path)
+
+        logger.info(f"Phase 2 complete. Outputs saved to {output_path}")
+        return results
 
     def close(self) -> None:
         """Close database connection."""

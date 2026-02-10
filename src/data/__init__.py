@@ -1,4 +1,4 @@
-"""Data pipeline for orchestrating scraping and storage."""
+"""Data pipeline for orchestrating scraping, cleaning, matching, and labeling."""
 
 from .pipeline import DataPipeline, ScrapeResult, ValidationReport
 
