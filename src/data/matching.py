@@ -186,6 +186,12 @@ def match_sources(
     enriched["understat_xg_overperformance"] = np.nan
     enriched["understat_xa_overperformance"] = np.nan
     enriched["match_confidence_us"] = np.nan
+    # Understat-specific per-90 features
+    enriched["us_xg_per90"] = np.nan
+    enriched["us_xa_per90"] = np.nan
+    enriched["us_npxg_per90"] = np.nan
+    enriched["us_key_passes"] = np.nan
+    enriched["us_shots"] = np.nan
 
     # Match Transfermarkt
     if not tm_df.empty:
@@ -206,6 +212,23 @@ def match_sources(
             enriched.loc[fb_idx, "understat_xg_overperformance"] = understat_df.loc[us_idx, "xg_overperformance"]
             enriched.loc[fb_idx, "understat_xa_overperformance"] = understat_df.loc[us_idx, "xa_overperformance"]
             enriched.loc[fb_idx, "match_confidence_us"] = confidence
+
+            # Backfill FBref xG from Understat when FBref has NULL
+            for col_fb, col_us in [("xg", "xg"), ("npxg", "npxg"), ("xg_assist", "xa")]:
+                if col_fb in enriched.columns and col_us in understat_df.columns:
+                    if pd.isna(enriched.loc[fb_idx, col_fb]):
+                        enriched.loc[fb_idx, col_fb] = understat_df.loc[us_idx, col_us]
+
+            # Populate Understat-specific per-90 features
+            for col_enr, col_us in [
+                ("us_xg_per90", "xg_per90"),
+                ("us_xa_per90", "xa_per90"),
+                ("us_npxg_per90", "npxg_per90"),
+                ("us_key_passes", "key_passes"),
+                ("us_shots", "shots"),
+            ]:
+                if col_us in understat_df.columns:
+                    enriched.loc[fb_idx, col_enr] = understat_df.loc[us_idx, col_us]
         result.understat_matched = len(us_matches)
         if us_matches:
             result.avg_us_confidence = np.mean([c for _, c in us_matches.values()])

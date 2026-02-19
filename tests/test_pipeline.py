@@ -97,7 +97,7 @@ class TestDataPipeline:
         """Test league constant definitions."""
         assert "eredivisie" in pipeline.ALL_LEAGUES
         assert "premier-league" in pipeline.ALL_LEAGUES
-        assert len(pipeline.UNDERSTAT_LEAGUES) == 6
+        assert len(pipeline.UNDERSTAT_LEAGUES) == 5  # Eredivisie dropped
 
         # Understat should be subset of all leagues
         for league in pipeline.UNDERSTAT_LEAGUES:
@@ -122,7 +122,7 @@ class TestDataPipeline:
         assert len(all_leagues) == 13
 
         understat_leagues = pipeline.get_supported_leagues("understat")
-        assert len(understat_leagues) == 6
+        assert len(understat_leagues) == 5  # Eredivisie dropped
 
         fbref_leagues = pipeline.get_supported_leagues("fbref")
         assert len(fbref_leagues) == 13
@@ -253,7 +253,8 @@ class TestDataPipelineWithMockedScrapers:
         """Test scraping from all sources."""
         pipeline, mock_fbref, mock_tm, mock_us = pipeline_with_mocks
 
-        result = pipeline.scrape_league_season("eredivisie", "2023-2024")
+        # Use premier-league since it has all 3 sources (Eredivisie dropped from Understat)
+        result = pipeline.scrape_league_season("premier-league", "2023-2024")
 
         assert result.success
         assert result.fbref_count == 1
@@ -303,7 +304,8 @@ class TestDataPipelineWithMockedScrapers:
         # Make FBref raise an error
         mock_fbref.scrape_league_season.side_effect = Exception("FBref is down")
 
-        result = pipeline.scrape_league_season("eredivisie", "2023-2024")
+        # Use premier-league since it has all 3 sources
+        result = pipeline.scrape_league_season("premier-league", "2023-2024")
 
         assert not result.success
         assert "FBref error" in result.errors[0]

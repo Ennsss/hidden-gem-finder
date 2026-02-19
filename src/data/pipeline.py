@@ -127,9 +127,8 @@ class DataPipeline:
         "ligue-1",
     ]
 
-    # Understat only supports 6 leagues
+    # Understat only supports 5 leagues (Eredivisie was dropped)
     UNDERSTAT_LEAGUES = [
-        "eredivisie",
         "premier-league",
         "la-liga",
         "bundesliga",
@@ -464,6 +463,55 @@ class DataPipeline:
         features_df, feat_result = engineer_features(labeled_df)
         results["engineering"] = str(feat_result)
 
+        # Step 4.5: Proxy xG model
+        # Train on FULL enriched data (has top-5 leagues with Understat xG),
+        # then apply the trained model to the labeled feeder-league features.
+        logger.info("Phase 2 Step 4.5: Training proxy xG on full enriched data...")
+        from src.features.proxy_xg import run_proxy_xg_pipeline, apply_proxy_xg
+        from src.features.engineering import convert_to_per90
+        proxy_model_path = output_path / "proxy_xg_model.joblib"
+
+        # Engineer the full enriched data just enough to get per-90 shooting stats
+        enriched_per90 = convert_to_per90(enriched_df)
+        # Need shots_on_target_pct and goals_per_shot_on_target which may exist as raw cols
+        if "shots_on_target_pct" not in enriched_per90.columns:
+            if "shots_on_target" in enriched_per90.columns and "shots" in enriched_per90.columns:
+                enriched_per90["shots_on_target_pct"] = (
+                    enriched_per90["shots_on_target"] / enriched_per90["shots"].replace(0, float("nan")) * 100
+                )
+        if "goals_per_shot_on_target" not in enriched_per90.columns:
+            if "goals" in enriched_per90.columns and "shots_on_target" in enriched_per90.columns:
+                enriched_per90["goals_per_shot_on_target"] = (
+                    enriched_per90["goals"] / enriched_per90["shots_on_target"].replace(0, float("nan"))
+                )
+
+        # Train proxy xG model on full data (top-5 leagues have Understat xG)
+        _, proxy_metrics = run_proxy_xg_pipeline(enriched_per90, proxy_model_path)
+        results["proxy_xg"] = proxy_metrics
+
+        if "error" not in proxy_metrics:
+            logger.info(
+                f"Proxy xG: R2={proxy_metrics.get('r2', 0):.3f}, "
+                f"Rank corr={proxy_metrics.get('rank_correlation', 0):.3f}"
+            )
+            # Now apply the saved model to the labeled features_df
+            import joblib
+            saved = joblib.load(proxy_model_path)
+            # Ensure features_df has the required columns
+            if "shots_on_target_pct" not in features_df.columns:
+                if "shots_on_target" in features_df.columns and "shots" in features_df.columns:
+                    features_df["shots_on_target_pct"] = (
+                        features_df["shots_on_target"] / features_df["shots"].replace(0, float("nan")) * 100
+                    )
+            if "goals_per_shot_on_target" not in features_df.columns:
+                if "goals" in features_df.columns and "shots_on_target" in features_df.columns:
+                    features_df["goals_per_shot_on_target"] = (
+                        features_df["goals"] / features_df["shots_on_target"].replace(0, float("nan"))
+                    )
+            features_df = apply_proxy_xg(features_df, saved["model"], saved["feature_names"])
+        else:
+            logger.warning(f"Proxy xG skipped: {proxy_metrics.get('error')}")
+
         # Step 5: Select features
         logger.info("Phase 2 Step 5: Selecting features...")
         final_df, sel_result = select_features(features_df)
@@ -658,7 +706,11 @@ class DataPipeline:
         return results
 
     def close(self) -> None:
-        """Close database connection."""
+        """Close database connection and scraper browsers."""
+        if hasattr(self.fbref, 'close'):
+            self.fbref.close()
+        if hasattr(self.understat, 'close'):
+            self.understat.close()
         self.db.close()
 
     def __enter__(self):

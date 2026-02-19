@@ -267,6 +267,24 @@ class TestFBrefScraper:
         with pytest.raises(ValueError, match="Unknown league"):
             scraper.scrape_league_season("fake-league", "2023-2024")
 
+    def test_uncomment_tables(self, scraper):
+        """Test that HTML comment tables are extracted."""
+        html = '''<html><body>
+        <div>visible content</div>
+        <!-- <div class="table_container" id="div_stats_shooting">
+        <table id="stats_shooting"><tbody>
+        <tr><td data-stat="xg">1.5</td></tr>
+        </tbody></table></div> -->
+        </body></html>'''
+        result = scraper._uncomment_tables(html)
+        assert "<!--" not in result or "stats_shooting" not in result.split("<!--")[1] if "<!--" in result else True
+        assert '<table id="stats_shooting">' in result
+
+    def test_uncomment_tables_passthrough(self, scraper):
+        """Test that non-commented tables are unaffected."""
+        html = '<html><body><table id="stats_standard"><tr><td>data</td></tr></table></body></html>'
+        assert scraper._uncomment_tables(html) == html
+
     def test_build_urls(self, scraper):
         """Test URL building methods."""
         league_id = "23"  # Eredivisie
@@ -459,11 +477,11 @@ class TestUnderstatScraper:
         """Test that league IDs are defined."""
         assert "eredivisie" in scraper.LEAGUE_IDS
         assert "premier-league" in scraper.LEAGUE_IDS
-        assert scraper.LEAGUE_IDS["eredivisie"] == "Eredivisie"
         assert scraper.LEAGUE_IDS["premier-league"] == "EPL"
 
     def test_unavailable_leagues(self, scraper):
         """Test that unavailable leagues are marked as None."""
+        assert scraper.LEAGUE_IDS.get("eredivisie") is None  # Dropped by Understat
         assert scraper.LEAGUE_IDS.get("championship") is None
         assert scraper.LEAGUE_IDS.get("primeira-liga") is None
         assert scraper.LEAGUE_IDS.get("belgian-pro-league") is None
@@ -476,13 +494,13 @@ class TestUnderstatScraper:
 
     def test_build_league_url(self, scraper):
         """Test URL building."""
-        url = scraper._build_league_url("eredivisie", "2023-2024")
-        assert "understat.com" in url
-        assert "Eredivisie" in url
-        assert "2023" in url
-
         url_epl = scraper._build_league_url("premier-league", "2023-2024")
+        assert "understat.com" in url_epl
         assert "EPL" in url_epl
+        assert "2023" in url_epl
+
+        url_liga = scraper._build_league_url("la-liga", "2023-2024")
+        assert "La_liga" in url_liga
 
     def test_position_mapping(self, scraper):
         """Test position code mapping."""
@@ -625,13 +643,13 @@ class TestUnderstatScraper:
         """Test full league season scraping with mocked requests."""
         mock_fetch.return_value = league_html
 
-        players = scraper.scrape_league_season("eredivisie", "2023-2024")
+        players = scraper.scrape_league_season("premier-league", "2023-2024")
 
         assert len(players) == 3
 
         # Check metadata is added
         for player in players:
-            assert player["league"] == "eredivisie"
+            assert player["league"] == "premier-league"
             assert player["season"] == "2023-2024"
             assert player["source"] == "understat"
 
@@ -656,15 +674,20 @@ class TestUnderstatScraper:
         with pytest.raises(ValueError, match="not available on Understat"):
             scraper.scrape_league_season("championship", "2023-2024")
 
+    def test_eredivisie_unavailable(self, scraper):
+        """Test that Eredivisie (dropped by Understat) raises error."""
+        with pytest.raises(ValueError, match="not available on Understat"):
+            scraper.scrape_league_season("eredivisie", "2023-2024")
+
 
 class TestUnderstatIntegration:
     """Integration tests for Understat scraper."""
 
     @pytest.mark.skip(reason="Integration test - hits real API")
-    def test_real_eredivisie_scrape(self, tmp_path):
-        """Test scraping real Eredivisie data."""
+    def test_real_epl_scrape(self, tmp_path):
+        """Test scraping real EPL data."""
         scraper = UnderstatScraper(cache_dir=tmp_path, rate_limit=5)
-        players = scraper.scrape_league_season("eredivisie", "2023-2024")
+        players = scraper.scrape_league_season("premier-league", "2023-2024")
 
         assert len(players) > 0
         assert all("name" in p for p in players)

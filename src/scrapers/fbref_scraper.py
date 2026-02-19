@@ -1,10 +1,19 @@
-"""FBref scraper for player statistics."""
+"""FBref scraper for player statistics.
+
+Uses seleniumbase UC (undetected Chrome) mode to bypass Cloudflare protection.
+A single browser instance is reused across all page fetches for efficiency.
+FBref wraps some stat tables in HTML comments — _uncomment_tables() extracts them.
+
+NOTE: FBref moved xG/progressive stats behind Stathead (paid subscription).
+These columns are not available via any scraping method. Use Understat for xG data.
+"""
 
 import logging
 import re
-from datetime import date
+import time
 from typing import Any
 
+import requests
 from bs4 import BeautifulSoup
 
 from .base_scraper import BaseScraper
@@ -17,9 +26,15 @@ class FBrefScraper(BaseScraper):
 
     FBref provides comprehensive football statistics including:
     - Standard stats (goals, assists, minutes)
-    - Advanced metrics (xG, xA, progressive passes/carries)
+    - Shooting stats (shots, shots on target)
     - Defensive actions (tackles, interceptions, blocks)
-    - Passing statistics (completion %, progressive passes)
+    - Passing statistics (completion %, key passes)
+    - Possession stats (touches, carries, take-ons)
+
+    NOTE: xG, npxG, xA, and progressive stats are behind Stathead paywall.
+    Use Understat data (merged via matching.py) for xG features.
+
+    Uses seleniumbase UC mode to bypass Cloudflare.
     """
 
     BASE_URL = "https://fbref.com"
@@ -42,9 +57,112 @@ class FBrefScraper(BaseScraper):
         "ligue-1": "13",
     }
 
+    def __init__(self, **kwargs):
+        self._sb_driver = None  # Lazy-initialized seleniumbase driver
+        super().__init__(**kwargs)
+
     @property
     def source_name(self) -> str:
         return "fbref"
+
+    def _create_session(self) -> requests.Session:
+        """Return a dummy session — FBref uses seleniumbase instead."""
+        return requests.Session()
+
+    def _setup_retries(self, max_retries: int) -> None:
+        """Skip retry adapter — seleniumbase handles its own retries."""
+        pass
+
+    def _get_sb_driver(self):
+        """Get or create the seleniumbase driver (lazy init)."""
+        if self._sb_driver is None:
+            from seleniumbase import Driver
+            logger.info("Starting seleniumbase UC browser for FBref...")
+            self._sb_driver = Driver(uc=True, headless=True)
+        return self._sb_driver
+
+    def close(self):
+        """Close the seleniumbase browser if open."""
+        if self._sb_driver is not None:
+            try:
+                self._sb_driver.quit()
+            except Exception:
+                pass
+            self._sb_driver = None
+
+    def __del__(self):
+        self.close()
+
+    @staticmethod
+    def _uncomment_tables(html: str) -> str:
+        """Uncomment HTML comment blocks that contain stat tables.
+
+        FBref wraps some <table> elements inside HTML comments for lazy loading.
+        This extracts them so BeautifulSoup can parse the full table set.
+        """
+        return re.sub(
+            r'<!--\s*(<div[^>]*class="table_container"[^>]*>.*?</div>)\s*-->',
+            r'\1',
+            html,
+            flags=re.DOTALL,
+        )
+
+    def fetch(self, url: str, use_cache: bool = True) -> str:
+        """Fetch a URL using seleniumbase UC mode with caching.
+
+        Overrides BaseScraper.fetch to use a real browser for Cloudflare bypass.
+        """
+        # Check cache first
+        if use_cache:
+            cached = self._get_cached_response(url)
+            if cached is not None:
+                return cached
+
+        # Respect rate limit
+        self._respect_rate_limit()
+
+        logger.info(f"Fetching (browser): {url}")
+
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                driver = self._get_sb_driver()
+                driver.get(url)
+                time.sleep(3)  # Wait for page + Cloudflare
+
+                content = driver.page_source
+                if not content or "Just a moment" in content[:500]:
+                    logger.info(f"Cloudflare challenge detected, waiting (attempt {attempt})...")
+                    time.sleep(10)
+                    content = driver.page_source
+
+                if "Just a moment" in content[:500]:
+                    if attempt < max_attempts:
+                        logger.warning(f"Still on challenge page, restarting browser...")
+                        self.close()  # Kill stale browser
+                        time.sleep(5)
+                        continue
+                    raise RuntimeError(f"Cloudflare challenge not solved after {max_attempts} attempts")
+
+                self._last_request_time = time.time()
+                self._request_count += 1
+
+                if use_cache:
+                    self._cache_response(url, content)
+
+                return content
+
+            except RuntimeError:
+                raise  # Don't retry RuntimeError (challenge failures)
+            except Exception as e:
+                logger.warning(f"Fetch attempt {attempt} failed: {e}. Restarting browser...")
+                self.close()  # Reset driver on any error
+                if attempt < max_attempts:
+                    time.sleep(5)
+                else:
+                    raise
+
+        raise RuntimeError(f"Failed to fetch {url} after {max_attempts} attempts")
 
     def _build_league_url(self, league_id: str, season: str) -> str:
         """Build URL for league season stats page."""
@@ -195,7 +313,7 @@ class FBrefScraper(BaseScraper):
         """Parse shooting stats table."""
         stats = {}
 
-        table = soup.find("table", {"id": lambda x: x and "shooting" in str(x).lower()})
+        table = soup.find("table", {"id": "stats_shooting"})
         if table is None:
             logger.warning("Could not find shooting table")
             return stats
@@ -247,7 +365,7 @@ class FBrefScraper(BaseScraper):
         """Parse passing stats table."""
         stats = {}
 
-        table = soup.find("table", {"id": lambda x: x and "passing" in str(x).lower()})
+        table = soup.find("table", {"id": "stats_passing"})
         if table is None:
             logger.warning("Could not find passing table")
             return stats
@@ -305,7 +423,7 @@ class FBrefScraper(BaseScraper):
         """Parse defensive stats table."""
         stats = {}
 
-        table = soup.find("table", {"id": lambda x: x and "defense" in str(x).lower()})
+        table = soup.find("table", {"id": "stats_defense"})
         if table is None:
             logger.warning("Could not find defense table")
             return stats
@@ -361,7 +479,7 @@ class FBrefScraper(BaseScraper):
         """Parse possession stats table."""
         stats = {}
 
-        table = soup.find("table", {"id": lambda x: x and "possession" in str(x).lower()})
+        table = soup.find("table", {"id": "stats_possession"})
         if table is None:
             logger.warning("Could not find possession table")
             return stats
@@ -477,7 +595,7 @@ class FBrefScraper(BaseScraper):
 
         # Fetch and parse standard stats (required)
         standard_url = self._build_league_url(league_id, season)
-        standard_html = self.fetch(standard_url)
+        standard_html = self._uncomment_tables(self.fetch(standard_url))
         standard_soup = BeautifulSoup(standard_html, "lxml")
         standard_stats = self._parse_standard_stats_table(standard_soup)
 
@@ -492,7 +610,7 @@ class FBrefScraper(BaseScraper):
         if include_shooting:
             try:
                 shooting_url = self._build_shooting_url(league_id, season)
-                shooting_html = self.fetch(shooting_url)
+                shooting_html = self._uncomment_tables(self.fetch(shooting_url))
                 shooting_soup = BeautifulSoup(shooting_html, "lxml")
                 shooting_stats = self._parse_shooting_table(shooting_soup)
                 logger.info(f"Found {len(shooting_stats)} players in shooting stats")
@@ -502,7 +620,7 @@ class FBrefScraper(BaseScraper):
         if include_passing:
             try:
                 passing_url = self._build_passing_url(league_id, season)
-                passing_html = self.fetch(passing_url)
+                passing_html = self._uncomment_tables(self.fetch(passing_url))
                 passing_soup = BeautifulSoup(passing_html, "lxml")
                 passing_stats = self._parse_passing_table(passing_soup)
                 logger.info(f"Found {len(passing_stats)} players in passing stats")
@@ -512,7 +630,7 @@ class FBrefScraper(BaseScraper):
         if include_defense:
             try:
                 defense_url = self._build_defense_url(league_id, season)
-                defense_html = self.fetch(defense_url)
+                defense_html = self._uncomment_tables(self.fetch(defense_url))
                 defense_soup = BeautifulSoup(defense_html, "lxml")
                 defense_stats = self._parse_defense_table(defense_soup)
                 logger.info(f"Found {len(defense_stats)} players in defense stats")
@@ -522,7 +640,7 @@ class FBrefScraper(BaseScraper):
         if include_possession:
             try:
                 possession_url = self._build_possession_url(league_id, season)
-                possession_html = self.fetch(possession_url)
+                possession_html = self._uncomment_tables(self.fetch(possession_url))
                 possession_soup = BeautifulSoup(possession_html, "lxml")
                 possession_stats = self._parse_possession_table(possession_soup)
                 logger.info(f"Found {len(possession_stats)} players in possession stats")

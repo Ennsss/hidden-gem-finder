@@ -172,6 +172,15 @@ def identify_breakouts(
     source_df = source_df[source_df["label"].notna()].copy()
     source_df["label"] = source_df["label"].astype(int)
 
+    # Warn if any season has only one class (fold evaluation will be unreliable)
+    for season in source_df["season"].unique():
+        season_labels = source_df[source_df["season"] == season]["label"]
+        if season_labels.nunique() < 2:
+            logger.warning(
+                f"Season {season} has only class {season_labels.unique().tolist()}"
+                " — fold evaluation will be unreliable"
+            )
+
     return source_df
 
 

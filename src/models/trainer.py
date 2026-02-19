@@ -30,6 +30,7 @@ PROTECTED_COLUMNS = {
     "match_confidence_us",
     "nationality",
     "birth_year",
+    "market_value_eur",  # 99% null in training data — metadata, not a feature
 }
 
 
@@ -70,15 +71,15 @@ def load_fold(
     logger.info(f"Fold {fold_num}: {len(feature_cols)} features, "
                 f"train={len(train_df)}, val={len(val_df)}, test={len(test_df)}")
 
-    # Extract feature matrices
-    X_train = train_df[feature_cols].values.astype(np.float64)
-    X_val = val_df[feature_cols].values.astype(np.float64)
-    X_test = test_df[feature_cols].values.astype(np.float64)
+    # Extract feature matrices (convert nullable dtypes to numpy-native first)
+    X_train = train_df[feature_cols].to_numpy(dtype=np.float64, na_value=np.nan)
+    X_val = val_df[feature_cols].to_numpy(dtype=np.float64, na_value=np.nan)
+    X_test = test_df[feature_cols].to_numpy(dtype=np.float64, na_value=np.nan)
 
     # Extract labels
-    y_train = train_df["label"].values.astype(np.float64)
-    y_val = val_df["label"].values.astype(np.float64)
-    y_test = test_df["label"].values.astype(np.float64)
+    y_train = train_df["label"].to_numpy(dtype=np.float64, na_value=np.nan)
+    y_val = val_df["label"].to_numpy(dtype=np.float64, na_value=np.nan)
+    y_test = test_df["label"].to_numpy(dtype=np.float64, na_value=np.nan)
 
     # Fill NaN with per-column median from training set
     train_medians = np.nanmedian(X_train, axis=0)

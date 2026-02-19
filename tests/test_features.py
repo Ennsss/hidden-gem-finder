@@ -10,6 +10,8 @@ from src.features.engineering import (
     convert_to_per90,
     create_derived_features,
     create_growth_features,
+    create_interaction_features,
+    create_multi_season_features,
     engineer_features,
 )
 from src.features.selection import (
@@ -377,3 +379,213 @@ class TestSelectFeatures:
         result_df, result = select_features(df)
         assert len(result.low_variance_removed) >= 1  # feat_const
         assert len(result.correlated_removed) >= 1  # feat_a or feat_b
+
+
+class TestMultiSeasonFeatures:
+    """Tests for multi-season career features."""
+
+    @pytest.fixture
+    def multi_season_df(self):
+        """Player p1 has 3 seasons, p2 has 1 season."""
+        return pd.DataFrame({
+            "player_id": ["p1", "p1", "p1", "p2"],
+            "season": ["2018-19", "2019-20", "2020-21", "2020-21"],
+            "goals_per90": [0.2, 0.4, 0.6, 0.3],
+            "assists_per90": [0.1, 0.15, 0.2, 0.25],
+            "minutes": [1000, 1500, 2000, 1800],
+            "league": ["eredivisie"] * 4,
+        })
+
+    def test_career_seasons_count(self, multi_season_df):
+        result = create_multi_season_features(multi_season_df)
+        p1_last = result[
+            (result["player_id"] == "p1") & (result["season"] == "2020-21")
+        ].iloc[0]
+        assert p1_last["career_seasons"] == 3
+
+    def test_single_season_player_has_1(self, multi_season_df):
+        result = create_multi_season_features(multi_season_df)
+        p2 = result[result["player_id"] == "p2"].iloc[0]
+        assert p2["career_seasons"] == 1
+
+    def test_single_season_player_nan_career_stats(self, multi_season_df):
+        result = create_multi_season_features(multi_season_df)
+        p2 = result[result["player_id"] == "p2"].iloc[0]
+        assert pd.isna(p2["career_avg_goals_per90"])
+        assert pd.isna(p2["goals_trend"])
+
+    def test_career_avg_goals_expanding(self, multi_season_df):
+        result = create_multi_season_features(multi_season_df)
+        # p1 season 2 (2019-20): avg of [0.2, 0.4] = 0.3
+        p1_s2 = result[
+            (result["player_id"] == "p1") & (result["season"] == "2019-20")
+        ].iloc[0]
+        assert p1_s2["career_avg_goals_per90"] == pytest.approx(0.3)
+
+    def test_career_max_goals(self, multi_season_df):
+        result = create_multi_season_features(multi_season_df)
+        # p1 season 3: max of [0.2, 0.4, 0.6] = 0.6
+        p1_s3 = result[
+            (result["player_id"] == "p1") & (result["season"] == "2020-21")
+        ].iloc[0]
+        assert p1_s3["career_max_goals_per90"] == pytest.approx(0.6)
+
+    def test_goals_trend_positive(self, multi_season_df):
+        result = create_multi_season_features(multi_season_df)
+        # p1 goals: 0.2 -> 0.4 -> 0.6, linear increase => positive slope
+        p1_last = result[
+            (result["player_id"] == "p1") & (result["season"] == "2020-21")
+        ].iloc[0]
+        assert p1_last["goals_trend"] > 0
+
+    def test_no_leakage_first_season(self, multi_season_df):
+        result = create_multi_season_features(multi_season_df)
+        # p1 first season: career_avg should equal just that season's value
+        p1_s1 = result[
+            (result["player_id"] == "p1") & (result["season"] == "2018-19")
+        ].iloc[0]
+        assert p1_s1["career_avg_goals_per90"] == pytest.approx(0.2)
+        # No trend with just 1 data point
+        assert pd.isna(p1_s1["goals_trend"])
+
+    def test_minutes_trend(self, multi_season_df):
+        result = create_multi_season_features(multi_season_df)
+        # p1 minutes: 1000 -> 1500 -> 2000, positive slope
+        p1_last = result[
+            (result["player_id"] == "p1") & (result["season"] == "2020-21")
+        ].iloc[0]
+        assert p1_last["minutes_trend"] > 0
+
+    def test_all_columns_created(self, multi_season_df):
+        result = create_multi_season_features(multi_season_df)
+        expected = [
+            "career_seasons", "career_avg_goals_per90", "career_avg_assists_per90",
+            "career_max_goals_per90", "career_avg_minutes",
+            "goals_trend", "minutes_trend",
+        ]
+        for col in expected:
+            assert col in result.columns, f"Missing {col}"
+
+
+class TestInteractionFeatures:
+    """Tests for interaction features."""
+
+    def test_age_x_minutes_growth(self):
+        df = pd.DataFrame({
+            "age_potential_factor": [0.5, 0.3],
+            "minutes_played_growth": [0.2, -0.1],
+        })
+        result = create_interaction_features(df)
+        assert "age_x_minutes_growth" in result.columns
+        assert result.iloc[0]["age_x_minutes_growth"] == pytest.approx(0.1)
+
+    def test_goals_above_avg_x_league_coeff(self):
+        df = pd.DataFrame({
+            "goals_above_avg": [0.3, 0.5],
+            "league": ["eredivisie", "eredivisie"],
+        })
+        result = create_interaction_features(df)
+        assert "goals_above_avg_x_league_coeff" in result.columns
+        # Eredivisie coeff = 0.85
+        assert result.iloc[0]["goals_above_avg_x_league_coeff"] == pytest.approx(0.3 * 0.85)
+
+    def test_finishing_x_volume(self):
+        df = pd.DataFrame({
+            "finishing_skill": [0.1, -0.05],
+            "shots_per90": [3.0, 2.0],
+        })
+        result = create_interaction_features(df)
+        assert "finishing_x_volume" in result.columns
+        assert result.iloc[0]["finishing_x_volume"] == pytest.approx(0.3)
+
+    def test_skips_missing_components(self):
+        df = pd.DataFrame({
+            "age_potential_factor": [0.5],
+            # minutes_played_growth is missing
+        })
+        result = create_interaction_features(df)
+        assert "age_x_minutes_growth" not in result.columns
+
+    def test_proxy_xg_x_age(self):
+        df = pd.DataFrame({
+            "proxy_xg_per90": [0.4, 0.2],
+            "age_potential_factor": [0.5, 0.3],
+        })
+        result = create_interaction_features(df)
+        assert "proxy_xg_x_age" in result.columns
+        assert result.iloc[0]["proxy_xg_x_age"] == pytest.approx(0.2)
+
+
+class TestPositionFeatures:
+    """Tests for position one-hot and position-weighted interactions."""
+
+    @pytest.fixture
+    def position_df(self):
+        return pd.DataFrame({
+            "player_id": ["p1", "p2", "p3"],
+            "position_group": ["FW", "MF", "DF"],
+            "goals_per90": [0.5, 0.2, 0.05],
+            "assists_per90": [0.2, 0.4, 0.1],
+            "xg_per90": [0.4, 0.15, 0.04],
+            "npxg_per90": [0.35, 0.1, 0.03],
+            "xg_assist_per90": [0.15, 0.35, 0.08],
+            "touches_per90": [40.0, 60.0, 50.0],
+            "passes_per90": [20.0, 40.0, 30.0],
+            "shots_per90": [3.0, 1.5, 0.5],
+            "shots_on_target_per90": [1.5, 0.8, 0.2],
+            "age": [22, 25, 28],
+            "minutes": [2000, 2500, 2200],
+            "minutes_90s": [22.2, 27.8, 24.4],
+            "tackles_per90": [1.0, 2.0, 3.5],
+            "interceptions_per90": [0.5, 1.5, 2.5],
+            "league": ["eredivisie", "eredivisie", "eredivisie"],
+            "season": ["2020-21", "2020-21", "2020-21"],
+        })
+
+    def test_position_one_hot_created(self, position_df):
+        result = create_derived_features(position_df)
+        assert "is_forward" in result.columns
+        assert "is_midfielder" in result.columns
+        assert "is_defender" in result.columns
+
+    def test_forward_encoding(self, position_df):
+        result = create_derived_features(position_df)
+        fw = result[result["player_id"] == "p1"].iloc[0]
+        assert fw["is_forward"] == 1
+        assert fw["is_midfielder"] == 0
+        assert fw["is_defender"] == 0
+
+    def test_midfielder_encoding(self, position_df):
+        result = create_derived_features(position_df)
+        mf = result[result["player_id"] == "p2"].iloc[0]
+        assert mf["is_forward"] == 0
+        assert mf["is_midfielder"] == 1
+
+    def test_defender_encoding(self, position_df):
+        result = create_derived_features(position_df)
+        df_row = result[result["player_id"] == "p3"].iloc[0]
+        assert df_row["is_defender"] == 1
+        assert df_row["is_forward"] == 0
+
+    def test_fw_goals_above_avg(self, position_df):
+        result = create_derived_features(position_df)
+        # FW p1 should have non-zero, MF/DF should be 0
+        fw = result[result["player_id"] == "p1"].iloc[0]
+        mf = result[result["player_id"] == "p2"].iloc[0]
+        assert fw["fw_goals_above_avg"] != 0 or fw["goals_above_avg"] == 0
+        assert mf["fw_goals_above_avg"] == 0  # Not a FW
+
+    def test_mf_assists_above_avg(self, position_df):
+        result = create_derived_features(position_df)
+        mf = result[result["player_id"] == "p2"].iloc[0]
+        fw = result[result["player_id"] == "p1"].iloc[0]
+        # MF should have assists_per90 * 1, FW should have 0
+        assert mf["mf_assists_above_avg"] == pytest.approx(0.4)
+        assert fw["mf_assists_above_avg"] == 0
+
+    def test_df_defensive_actions(self, position_df):
+        result = create_derived_features(position_df)
+        df_row = result[result["player_id"] == "p3"].iloc[0]
+        fw = result[result["player_id"] == "p1"].iloc[0]
+        assert df_row["df_defensive_actions"] > 0
+        assert fw["df_defensive_actions"] == 0

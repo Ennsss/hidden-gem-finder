@@ -188,4 +188,4 @@ position_features:
 selection:
   correlation_threshold: 0.90  # Remove features correlated above this
   importance_threshold: 0.01   # Minimum feature importance to keep
-  variance_threshold: 0.01     # Minimum variance to keep
+  variance_threshold: 0.0001   # Minimum variance to keep

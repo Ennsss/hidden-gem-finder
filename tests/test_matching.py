@@ -94,6 +94,9 @@ class TestMatchSources:
             "position_group": ["FW", "MF", "DF"],
             "age": [22, 19, 20],
             "minutes": [2500, 1200, 2800],
+            "xg": [np.nan, np.nan, np.nan],
+            "npxg": [np.nan, np.nan, np.nan],
+            "xg_assist": [np.nan, np.nan, np.nan],
         })
 
     @pytest.fixture
@@ -115,10 +118,18 @@ class TestMatchSources:
             "team": ["PSV", "PSV"],
             "league": ["eredivisie", "eredivisie"],
             "season": ["2021-22", "2021-22"],
+            "xg": [15.8, 5.0],
+            "xa": [10.2, 4.0],
+            "npxg": [12.4, 4.5],
             "xg_chain": [8.5, 3.2],
             "xg_buildup": [5.1, 2.8],
             "xg_overperformance": [2.1, 0.5],
             "xa_overperformance": [1.0, 0.3],
+            "xg_per90": [0.50, 0.42],
+            "xa_per90": [0.32, 0.33],
+            "npxg_per90": [0.39, 0.38],
+            "key_passes": [67, 30],
+            "shots": [98, 40],
         })
 
     def test_enriches_with_market_value(self, fbref_df, tm_df, understat_df):
@@ -143,7 +154,9 @@ class TestMatchSources:
         """Understat not available for some leagues → NaN."""
         empty_us = pd.DataFrame(columns=[
             "player_id", "name", "team", "league", "season",
+            "xg", "xa", "npxg",
             "xg_chain", "xg_buildup", "xg_overperformance", "xa_overperformance",
+            "xg_per90", "xa_per90", "npxg_per90", "key_passes", "shots",
         ])
         result_df, result = match_sources(fbref_df, tm_df, empty_us)
         timber = result_df[result_df["name"] == "Jurrien Timber"].iloc[0]
@@ -187,3 +200,38 @@ class TestMatchSources:
 
         result_df, result = match_sources(fbref_df, tm_df_diff, understat_df)
         assert result.tm_matched == 0  # No matches across leagues
+
+    def test_backfills_xg_from_understat(self, fbref_df, tm_df, understat_df):
+        """FBref NULL xG should be backfilled from Understat."""
+        result_df, _ = match_sources(fbref_df, tm_df, understat_df)
+        gakpo = result_df[result_df["name"] == "Cody Gakpo"].iloc[0]
+        # FBref xg was NaN, should be backfilled from Understat
+        assert gakpo["xg"] == 15.8
+        assert gakpo["npxg"] == 12.4
+        assert gakpo["xg_assist"] == 10.2
+
+    def test_preserves_existing_fbref_xg(self, fbref_df, tm_df, understat_df):
+        """If FBref already has xG, don't overwrite with Understat."""
+        fbref_df.loc[0, "xg"] = 16.0  # Gakpo has FBref xG
+        result_df, _ = match_sources(fbref_df, tm_df, understat_df)
+        gakpo = result_df[result_df["name"] == "Cody Gakpo"].iloc[0]
+        assert gakpo["xg"] == 16.0  # Preserved FBref value
+
+    def test_understat_per90_columns(self, fbref_df, tm_df, understat_df):
+        """Understat per-90 features should be populated."""
+        result_df, _ = match_sources(fbref_df, tm_df, understat_df)
+        gakpo = result_df[result_df["name"] == "Cody Gakpo"].iloc[0]
+        assert gakpo["us_xg_per90"] == 0.50
+        assert gakpo["us_xa_per90"] == 0.32
+        assert gakpo["us_npxg_per90"] == 0.39
+        assert gakpo["us_key_passes"] == 67
+        assert gakpo["us_shots"] == 98
+
+    def test_unmatched_players_have_nan_understat(self, fbref_df, tm_df, understat_df):
+        """Players without Understat match should have NaN for us_* columns."""
+        result_df, _ = match_sources(fbref_df, tm_df, understat_df)
+        timber = result_df[result_df["name"] == "Jurrien Timber"].iloc[0]
+        assert pd.isna(timber["us_xg_per90"])
+        assert pd.isna(timber["us_shots"])
+        # xg should stay NaN too (no Understat match)
+        assert pd.isna(timber["xg"])

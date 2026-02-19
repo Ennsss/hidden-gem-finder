@@ -29,7 +29,7 @@ class SelectionResult:
 
     def __str__(self) -> str:
         return (
-            f"Feature selection: {self.input_features} → {self.final_features}\n"
+            f"Feature selection: {self.input_features} -> {self.final_features}\n"
             f"  Correlated removed: {len(self.correlated_removed)}\n"
             f"  Low variance removed: {len(self.low_variance_removed)}"
         )
@@ -42,6 +42,7 @@ PROTECTED_COLUMNS = {
     "label", "breakout_league", "breakout_season",
     "age", "birth_year",
     "match_confidence_tm", "match_confidence_us",
+    "market_value_eur",  # 99% null in training data — metadata, not a feature
 }
 
 
@@ -106,7 +107,8 @@ def remove_low_variance(
 
     to_drop = []
     for col in numeric_cols:
-        if df[col].var() < threshold:
+        col_var = df[col].var()
+        if pd.isna(col_var) or col_var < threshold:
             to_drop.append(col)
 
     removed = sorted(to_drop)
@@ -114,8 +116,61 @@ def remove_low_variance(
     return result, removed
 
 
+def impute_with_league_position_median(df: pd.DataFrame) -> pd.DataFrame:
+    """Impute NaN values using league-position-season group medians.
+
+    For each numeric feature column, fills NaN with the median of the
+    player's (league, position_group, season) group. Falls back to the
+    global column median if the group is too small or also NaN.
+
+    Args:
+        df: DataFrame with numeric features and grouping columns
+
+    Returns:
+        DataFrame with NaN values imputed
+    """
+    result = df.copy()
+    group_cols = ["league", "position_group", "season"]
+
+    if not all(c in result.columns for c in group_cols):
+        return result
+
+    numeric_cols = [
+        c for c in result.select_dtypes(include=[np.number]).columns
+        if c not in PROTECTED_COLUMNS
+    ]
+
+    # Convert nullable integer columns to float64 to avoid dtype cast errors
+    for col in numeric_cols:
+        if pd.api.types.is_integer_dtype(result[col]) and result[col].isna().any():
+            result[col] = result[col].astype("float64")
+
+    for col in numeric_cols:
+        if result[col].isna().sum() == 0:
+            continue
+
+        # Ensure float dtype for imputation
+        if not pd.api.types.is_float_dtype(result[col]):
+            result[col] = result[col].astype("float64")
+
+        # Group median
+        group_median = result.groupby(group_cols)[col].transform("median")
+        result[col] = result[col].fillna(group_median)
+
+        # Global median fallback for remaining NaN
+        global_median = result[col].median()
+        if pd.notna(global_median):
+            result[col] = result[col].fillna(global_median)
+
+    n_imputed = df.select_dtypes(include=[np.number]).isna().sum().sum() - result.select_dtypes(include=[np.number]).isna().sum().sum()
+    if n_imputed > 0:
+        logger.info(f"Imputed {n_imputed} NaN values with league-position medians")
+
+    return result
+
+
 def select_features(df: pd.DataFrame) -> tuple[pd.DataFrame, SelectionResult]:
-    """Main entry point: run correlation and variance filtering.
+    """Main entry point: impute, then run correlation and variance filtering.
 
     Args:
         df: Engineered feature DataFrame
@@ -128,6 +183,9 @@ def select_features(df: pd.DataFrame) -> tuple[pd.DataFrame, SelectionResult]:
     var_threshold = config["selection"]["variance_threshold"]
 
     result = SelectionResult()
+
+    # Impute missing values before selection
+    df = impute_with_league_position_median(df)
 
     numeric_cols = [
         c for c in df.select_dtypes(include=[np.number]).columns

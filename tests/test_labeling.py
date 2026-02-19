@@ -193,23 +193,23 @@ class TestCreateTemporalSplits:
             assert "test" in fold
 
     def test_fold_1_train_end(self, labeled_df):
-        """Fold 1: train ≤ 2018-19."""
+        """Fold 1: train ≤ 2017-18."""
         splits = create_temporal_splits(labeled_df)
         train = splits["fold_1"]["train"]
         max_train_year = max(int(s.split("-")[0]) for s in train["season"])
-        assert max_train_year <= 2018
+        assert max_train_year <= 2017
 
     def test_fold_1_val_season(self, labeled_df):
-        """Fold 1: val = 2019-20."""
+        """Fold 1: val = 2018-19."""
         splits = create_temporal_splits(labeled_df)
         val = splits["fold_1"]["val"]
-        assert all(val["season"] == "2019-20")
+        assert all(val["season"] == "2018-19")
 
     def test_fold_1_test_season(self, labeled_df):
-        """Fold 1: test = 2020-21."""
+        """Fold 1: test = 2019-20."""
         splits = create_temporal_splits(labeled_df)
         test = splits["fold_1"]["test"]
-        assert all(test["season"] == "2020-21")
+        assert all(test["season"] == "2019-20")
 
     def test_no_overlap_between_splits(self, labeled_df):
         """Train, val, test should not overlap."""

@@ -57,7 +57,7 @@ class CleaningResult:
 
     def __str__(self) -> str:
         return (
-            f"Cleaning: {self.total_raw} raw → {self.final_count} final\n"
+            f"Cleaning: {self.total_raw} raw -> {self.final_count} final\n"
             f"  GK removed: {self.gk_removed}\n"
             f"  Age/minutes filtered: "
             f"{self.total_raw - self.gk_removed - self.final_count}\n"
@@ -156,6 +156,10 @@ def cap_outliers(df: pd.DataFrame, percentile: int = 99) -> tuple[pd.DataFrame, 
             if len(values) == 0:
                 continue
             cap_val = np.percentile(values, percentile)
+            # Cast cap_val to match column dtype (e.g. Int32 can't accept float)
+            col_dtype = capped[col].dtype
+            if pd.api.types.is_integer_dtype(col_dtype):
+                cap_val = int(cap_val)
             over_cap = capped.loc[mask, col] > cap_val
             count = over_cap.sum()
             if count > 0:

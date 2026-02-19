@@ -64,8 +64,9 @@ class TransfermarktScraper(BaseScraper):
         return "transfermarkt"
 
     def _build_league_players_url(self, league: str, season: str, page: int = 1) -> str:
-        """Build URL for league players page.
+        """Build URL for league players page (market values listing).
 
+        Uses /marktwerte/ which lists individual players with market values.
         Transfermarkt uses the start year for season, e.g., 2023-2024 -> 2023
         """
         league_name = self.LEAGUE_NAMES.get(league.lower().replace(" ", "-"))
@@ -77,8 +78,8 @@ class TransfermarktScraper(BaseScraper):
         season_year = season.split("-")[0]
 
         return (
-            f"{self.BASE_URL}/{league_name}/startseite/wettbewerb/{league_id}"
-            f"/plus/?saison_id={season_year}&page={page}"
+            f"{self.BASE_URL}/{league_name}/marktwerte/wettbewerb/{league_id}"
+            f"/saison_id/{season_year}/page/{page}"
         )
 
     def _build_player_url(self, player_slug: str, player_id: str) -> str:
@@ -332,7 +333,7 @@ class TransfermarktScraper(BaseScraper):
         return transfers
 
     def scrape_league_season(
-        self, league: str, season: str, max_pages: int = 10
+        self, league: str, season: str, max_pages: int = 25
     ) -> list[dict[str, Any]]:
         """Scrape all players for a league season.
 
@@ -353,6 +354,7 @@ class TransfermarktScraper(BaseScraper):
         logger.info(f"Scraping Transfermarkt: {league} {season}")
 
         all_players = []
+        seen_ids = set()
         page = 1
 
         while page <= max_pages:
@@ -365,15 +367,23 @@ class TransfermarktScraper(BaseScraper):
                     logger.info(f"No players found on page {page}, stopping")
                     break
 
-                all_players.extend(players)
-                logger.info(f"Page {page}: found {len(players)} players")
+                # Detect pagination wrap-around (TM repeats pages after last)
+                new_players = [p for p in players if p["player_id"] not in seen_ids]
+                if not new_players:
+                    logger.info(f"Page {page}: all duplicates, pagination wrapped. Stopping.")
+                    break
+
+                for p in new_players:
+                    seen_ids.add(p["player_id"])
+                all_players.extend(new_players)
+                logger.info(f"Page {page}: found {len(new_players)} new players")
                 page += 1
 
             except Exception as e:
                 logger.error(f"Error scraping page {page}: {e}")
                 break
 
-        logger.info(f"Scraped {len(all_players)} players for {league} {season}")
+        logger.info(f"Scraped {len(all_players)} unique players for {league} {season}")
         return all_players
 
     def scrape_player_details(

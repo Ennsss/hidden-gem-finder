@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import random
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -54,11 +55,22 @@ class BaseScraper(ABC):
         self._user_agent_index = 0
 
         # Set up session with retries
-        self.session = requests.Session()
+        self.session = self._create_session()
+        self._setup_retries(max_retries)
+
+    # Subclasses can set this to add a Referer header
+    BASE_URL: str = ""
+
+    def _create_session(self) -> requests.Session:
+        """Create the HTTP session. Override in subclasses for custom sessions."""
+        return requests.Session()
+
+    def _setup_retries(self, max_retries: int) -> None:
+        """Mount retry adapter on the session. Override to skip for custom sessions."""
         retry_strategy = Retry(
             total=max_retries,
             backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
+            status_forcelist=[403, 429, 500, 502, 503, 504],
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self.session.mount("http://", adapter)
@@ -95,24 +107,28 @@ class BaseScraper(ABC):
         logger.debug(f"Cached: {url}")
 
     def _respect_rate_limit(self) -> None:
-        """Sleep if necessary to respect rate limit."""
+        """Sleep if necessary to respect rate limit, with random jitter."""
         elapsed = time.time() - self._last_request_time
         if elapsed < self.rate_limit:
-            sleep_time = self.rate_limit - elapsed
+            jitter = random.uniform(0, 2.0)
+            sleep_time = self.rate_limit - elapsed + jitter
             logger.debug(f"Rate limiting: sleeping {sleep_time:.2f}s")
             time.sleep(sleep_time)
 
     def _get_headers(self) -> dict[str, str]:
-        """Get request headers with rotating user agent."""
+        """Get request headers with rotating user agent and Referer."""
         ua = self.USER_AGENTS[self._user_agent_index % len(self.USER_AGENTS)]
         self._user_agent_index += 1
-        return {
+        headers = {
             "User-Agent": ua,
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
             "Accept-Encoding": "gzip, deflate",
             "Connection": "keep-alive",
         }
+        if self.BASE_URL:
+            headers["Referer"] = self.BASE_URL + "/"
+        return headers
 
     def fetch(self, url: str, use_cache: bool = True) -> str:
         """Fetch a URL with caching and rate limiting.

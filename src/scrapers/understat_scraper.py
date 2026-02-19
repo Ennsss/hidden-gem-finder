@@ -1,8 +1,12 @@
-"""Understat scraper for xG/xA statistics."""
+"""Understat scraper for xG/xA statistics.
+
+Uses seleniumbase UC mode to render the page and extract playersData
+from the JavaScript context (data is no longer embedded in raw HTML).
+"""
 
 import json
 import logging
-import re
+import time
 from typing import Any
 
 from .base_scraper import BaseScraper
@@ -13,15 +17,15 @@ logger = logging.getLogger(__name__)
 class UnderstatScraper(BaseScraper):
     """Scraper for Understat.com xG/xA statistics.
 
-    Understat provides detailed expected goals data for 6 European leagues:
+    Understat provides detailed expected goals data for 5 European leagues:
     - Premier League (EPL)
     - La Liga
     - Bundesliga
     - Serie A
     - Ligue 1
-    - Eredivisie
 
-    Data is embedded as JSON in JavaScript within HTML pages.
+    Note: Eredivisie was previously available but has been dropped by Understat.
+    Data is loaded via JavaScript — we use a browser to extract it.
     """
 
     BASE_URL = "https://understat.com"
@@ -29,8 +33,9 @@ class UnderstatScraper(BaseScraper):
     # Map our kebab-case league keys to Understat league names
     # None means the league is not available on Understat
     LEAGUE_IDS = {
+        # Eredivisie was dropped by Understat (returns 404)
+        "eredivisie": None,
         # Available on Understat
-        "eredivisie": "Eredivisie",
         "premier-league": "EPL",
         "la-liga": "La_liga",
         "bundesliga": "Bundesliga",
@@ -46,7 +51,7 @@ class UnderstatScraper(BaseScraper):
         "scottish-premiership": None,
     }
 
-    # Position code normalization
+    # Position code normalization — Understat uses short codes like "F", "M S", "D"
     POSITION_MAP = {
         "F": "FW",
         "M": "MF",
@@ -55,9 +60,33 @@ class UnderstatScraper(BaseScraper):
         "S": "FW",  # Sub/Striker -> Forward
     }
 
+    def __init__(self, **kwargs):
+        self._sb_driver = None
+        super().__init__(**kwargs)
+
     @property
     def source_name(self) -> str:
         return "understat"
+
+    def _get_sb_driver(self):
+        """Get or create the seleniumbase driver (lazy init)."""
+        if self._sb_driver is None:
+            from seleniumbase import Driver
+            logger.info("Starting seleniumbase UC browser for Understat...")
+            self._sb_driver = Driver(uc=True, headless=True)
+        return self._sb_driver
+
+    def close(self):
+        """Close the seleniumbase browser if open."""
+        if self._sb_driver is not None:
+            try:
+                self._sb_driver.quit()
+            except Exception:
+                pass
+            self._sb_driver = None
+
+    def __del__(self):
+        self.close()
 
     def _convert_season_format(self, season: str) -> str:
         """Convert '2023-2024' or '2023-24' to '2023' (start year)."""
@@ -78,30 +107,90 @@ class UnderstatScraper(BaseScraper):
         season_year = self._convert_season_format(season)
         return f"{self.BASE_URL}/league/{league_name}/{season_year}"
 
-    def _decode_json_string(self, encoded: str) -> str:
-        """Decode unicode/hex escaped string from Understat."""
-        try:
-            return encoded.encode("utf-8").decode("unicode_escape")
-        except Exception:
-            return encoded
+    def _normalize_position(self, raw_position: str) -> str:
+        """Normalize Understat position codes.
 
-    def _extract_players_data(self, html: str) -> list[dict]:
-        """Extract playersData JSON from page HTML."""
-        pattern = r"var\s+playersData\s*=\s*JSON\.parse\('(.+?)'\)"
-        match = re.search(pattern, html)
+        Understat uses codes like "F", "M S", "D M", "GK".
+        Take the first code and map it.
+        """
+        if not raw_position:
+            return raw_position
+        first_code = raw_position.strip().split()[0]
+        return self.POSITION_MAP.get(first_code, raw_position)
 
-        if match is None:
-            logger.warning("Could not find playersData in page")
-            return []
+    def _get_cache_key(self, url: str) -> str:
+        """Generate cache key for Understat JSON data."""
+        import hashlib
+        url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+        clean_url = url.replace("https://", "").replace("/", "_")[:50]
+        return f"{clean_url}_{url_hash}.json"
 
-        encoded_string = match.group(1)
-        decoded_string = self._decode_json_string(encoded_string)
+    def _get_cached_players(self, url: str) -> list[dict] | None:
+        """Check for cached player data."""
+        from pathlib import Path
+        cache_path = self.cache_dir / self.source_name / self._get_cache_key(url)
+        if cache_path.exists():
+            logger.debug(f"Cache hit: {url}")
+            return json.loads(cache_path.read_text(encoding="utf-8"))
+        return None
 
-        try:
-            return json.loads(decoded_string)
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse playersData JSON: {e}")
-            return []
+    def _cache_players(self, url: str, players: list[dict]) -> None:
+        """Cache player data to disk."""
+        from pathlib import Path
+        cache_path = self.cache_dir / self.source_name / self._get_cache_key(url)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(players), encoding="utf-8")
+        logger.debug(f"Cached: {url}")
+
+    def _extract_players_via_browser(self, url: str) -> list[dict]:
+        """Load page in browser and extract playersData JS variable."""
+        # Check cache
+        cached = self._get_cached_players(url)
+        if cached is not None:
+            return cached
+
+        self._respect_rate_limit()
+
+        logger.info(f"Fetching (browser): {url}")
+        driver = self._get_sb_driver()
+
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                driver.get(url)
+                time.sleep(3)
+
+                # Extract playersData from JS context
+                result = driver.execute_script(
+                    'return typeof playersData !== "undefined" ? JSON.stringify(playersData) : null'
+                )
+
+                if result is None:
+                    if attempt < max_attempts:
+                        logger.warning(f"playersData not available, retrying (attempt {attempt})...")
+                        time.sleep(5)
+                        continue
+                    logger.error("playersData not found after all attempts")
+                    return []
+
+                self._last_request_time = time.time()
+                self._request_count += 1
+
+                players = json.loads(result)
+                logger.info(f"Extracted {len(players)} players via browser JS")
+
+                # Cache for future runs
+                self._cache_players(url, players)
+                return players
+
+            except Exception as e:
+                if attempt < max_attempts:
+                    logger.warning(f"Attempt {attempt} failed: {e}. Retrying...")
+                    time.sleep(5)
+                else:
+                    raise
+
+        return []
 
     def _safe_float(self, val: Any, default: float | None = None) -> float | None:
         """Safely convert value to float."""
@@ -130,8 +219,7 @@ class UnderstatScraper(BaseScraper):
         xa = self._safe_float(raw.get("xA"), 0.0)
         npxg = self._safe_float(raw.get("npxG"), 0.0)
 
-        raw_position = raw.get("position", "")
-        position = self.POSITION_MAP.get(raw_position, raw_position)
+        position = self._normalize_position(raw.get("position", ""))
 
         return {
             "player_id": str(raw.get("id", "")),
@@ -190,9 +278,7 @@ class UnderstatScraper(BaseScraper):
         logger.info(f"Scraping Understat: {league} {season}")
 
         url = self._build_league_url(league_key, season)
-        html = self.fetch(url)
-
-        raw_players = self._extract_players_data(html)
+        raw_players = self._extract_players_via_browser(url)
         logger.info(f"Found {len(raw_players)} players in raw data")
 
         players = []
