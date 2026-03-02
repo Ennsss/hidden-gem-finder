@@ -23,8 +23,10 @@ def _lgbm_objective(
     config: dict,
 ) -> float:
     """Optuna objective for LightGBM: maximize ROC-AUC on validation set."""
+    from src.models.trainer import resolve_positive_weight
+
     tuning_space = config.get("lightgbm", {}).get("tuning_space", {})
-    positive_weight = config.get("imbalance", {}).get("positive_weight", 10)
+    positive_weight = resolve_positive_weight(config, y_train)
     early_stopping = config.get("lightgbm", {}).get("early_stopping_rounds", 50)
 
     params = {
@@ -70,8 +72,10 @@ def _xgb_objective(
     config: dict,
 ) -> float:
     """Optuna objective for XGBoost: maximize ROC-AUC on validation set."""
+    from src.models.trainer import resolve_positive_weight
+
     tuning_space = config.get("xgboost", {}).get("tuning_space", {})
-    positive_weight = config.get("imbalance", {}).get("positive_weight", 10)
+    positive_weight = resolve_positive_weight(config, y_train)
     early_stopping = config.get("xgboost", {}).get("early_stopping_rounds", 50)
 
     params = {

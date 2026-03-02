@@ -9,7 +9,7 @@ training:
 # Class imbalance handling
 imbalance:
   strategy: "class_weight"  # Options: class_weight, smote, undersampling
-  positive_weight: 7  # Weight for minority class (~7.2 actual imbalance ratio)
+  positive_weight: "auto"  # Auto-compute from actual class distribution
 
 # Cross-validation settings
 cross_validation:
@@ -123,7 +123,7 @@ ensemble:
     xgboost: 0.5
   calibration:
     enabled: true
-    method: "isotonic"  # Options: isotonic, platt
+    method: "platt"  # Options: isotonic, platt (platt is more robust with small val sets)
 
 # Evaluation thresholds
 evaluation:

@@ -125,4 +125,3 @@ training:
   min_observation_minutes: 450
   age_range:
     min: 17
-    max: 26

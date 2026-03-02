@@ -167,15 +167,28 @@ def generate_report(preds, eval_results, feat_imp, features):
     fp_df = preds[(preds["label"] == 0.0)].nlargest(50, "prob_calibrated")
 
     # Check if any FP players appear in a top-5 league later (near-miss)
+    # Use full FBref data from DuckDB (includes top-5 league appearances)
     top5_leagues = {"premier-league", "la-liga", "bundesliga", "serie-a", "ligue-1"}
-    # Use features_final to check if player appeared in top-5 league in any season
+    try:
+        from src.storage import PlayerDatabase
+        db = PlayerDatabase(PROJECT_ROOT / "data" / "players.duckdb")
+        all_fbref = db.get_fbref_players()
+        db.close()
+        # Build set of player_ids that appeared in top-5 leagues
+        top5_player_ids = set(
+            all_fbref[all_fbref["league"].isin(top5_leagues)]["player_id"].unique()
+        )
+    except Exception:
+        # Fallback to features_final if DuckDB unavailable
+        top5_player_ids = set(
+            features[features["league"].isin(top5_leagues)]["player_id"].unique()
+        ) if "league" in features.columns else set()
+
     near_misses = 0
     lines.append("| Rank | Name | Pos | Team | League | Season | Prob | Near-Miss? |")
     lines.append("|------|------|-----|------|--------|--------|------|------------|")
     for i, (_, row) in enumerate(fp_df.iterrows(), 1):
-        # Check if this player_id appears in features_final in a top-5 league
-        player_appearances = features[features["player_id"] == row["player_id"]]
-        in_top5 = player_appearances["league"].isin(top5_leagues).any() if len(player_appearances) > 0 else False
+        in_top5 = row["player_id"] in top5_player_ids
         near_miss_str = "YES (appeared in top-5)" if in_top5 else "no"
         if in_top5:
             near_misses += 1

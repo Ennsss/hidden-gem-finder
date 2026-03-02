@@ -56,7 +56,7 @@ PER90_COLUMNS = [
     "shots", "shots_on_target",
     "passes_completed", "passes", "progressive_passes",
     "progressive_carries",
-    "tackles", "interceptions", "blocks", "clearances",
+    "tackles", "tackles_won", "interceptions", "blocks", "clearances",
     "touches", "take_ons_won", "carries",
     "carries_into_final_third", "carries_into_penalty_area",
     "touches_att_pen_area", "assisted_shots",
@@ -155,6 +155,36 @@ def create_derived_features(df: pd.DataFrame) -> pd.DataFrame:
     if "us_npxg_per90" in result.columns and "us_xa_per90" in result.columns:
         result["us_npxg_xa_per90"] = result["us_npxg_per90"] + result["us_xa_per90"]
 
+    # --- Shooting efficiency features (from available FBref stats) ---
+    # Shot conversion rate
+    if "goals_per90" in result.columns and "shots_per90" in result.columns:
+        eps = 1e-6
+        result["shot_conversion_rate"] = result["goals_per90"] / (result["shots_per90"] + eps)
+
+    # Shots on target rate (complements shots_on_target_pct which may have gaps)
+    if "shots_on_target_per90" in result.columns and "shots_per90" in result.columns:
+        eps = 1e-6
+        result["sot_rate_per90"] = result["shots_on_target_per90"] / (result["shots_per90"] + eps)
+
+    # Goals per start (consistency/impact measure)
+    if "goals" in result.columns and "games_starts" in result.columns:
+        result["goals_per_start"] = result["goals"] / result["games_starts"].replace(0, float("nan"))
+
+    # Assists per start
+    if "assists" in result.columns and "games_starts" in result.columns:
+        result["assists_per_start"] = result["assists"] / result["games_starts"].replace(0, float("nan"))
+
+    # Starting frequency (how often selected to start)
+    if "games_starts" in result.columns and "games" in result.columns:
+        result["start_ratio"] = result["games_starts"] / result["games"].replace(0, float("nan"))
+
+    # League-adjusted goal contribution
+    if "goal_contribution_per90" in result.columns:
+        result["goal_contribution_league_adj"] = result.apply(
+            lambda row: row["goal_contribution_per90"] * league_coeff.get(row["league"], 1.0),
+            axis=1,
+        )
+
     # --- Position one-hot encoding ---
     if "position_group" in result.columns:
         result["is_forward"] = (result["position_group"] == "FW").astype(int)
@@ -206,7 +236,11 @@ def _add_baseline_features(df: pd.DataFrame, league_coeff: dict) -> pd.DataFrame
         result["non_penalty_goals_per90"] = result["goals_per90"]
 
     # Defensive actions per 90
-    if all(c in result.columns for c in ["tackles_won", "interceptions_per90"]):
+    if all(c in result.columns for c in ["tackles_won_per90", "interceptions_per90"]):
+        result["defensive_actions_per90"] = (
+            result["tackles_won_per90"] + result["interceptions_per90"]
+        )
+    elif all(c in result.columns for c in ["tackles_won", "interceptions_per90"]):
         result["defensive_actions_per90"] = (
             result["tackles_won"] / result["minutes_90s"] + result["interceptions_per90"]
         )
@@ -472,6 +506,30 @@ def create_interaction_features(df: pd.DataFrame) -> pd.DataFrame:
     if all(c in result.columns for c in ["defensive_actions_per90", "progressive_carries_per90"]):
         result["defensive_x_progressive"] = (
             result["defensive_actions_per90"] * result["progressive_carries_per90"]
+        )
+
+    # age * goal_contribution (young prolific players)
+    if all(c in result.columns for c in ["age_potential_factor", "goal_contribution_per90"]):
+        result["age_x_goal_contribution"] = (
+            result["age_potential_factor"] * result["goal_contribution_per90"]
+        )
+
+    # shot_conversion * age_potential (young efficient finishers)
+    if all(c in result.columns for c in ["shot_conversion_rate", "age_potential_factor"]):
+        result["conversion_x_age"] = (
+            result["shot_conversion_rate"] * result["age_potential_factor"]
+        )
+
+    # start_ratio * goals_above_avg (trusted starters who outperform)
+    if all(c in result.columns for c in ["start_ratio", "goals_above_avg"]):
+        result["starter_x_goals_above_avg"] = (
+            result["start_ratio"] * result["goals_above_avg"]
+        )
+
+    # minutes_share * age_potential (young regular starters)
+    if all(c in result.columns for c in ["minutes_share", "age_potential_factor"]):
+        result["minutes_share_x_age"] = (
+            result["minutes_share"] * result["age_potential_factor"]
         )
 
     n_added = len(result.columns) - len(df.columns)

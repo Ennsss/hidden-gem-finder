@@ -34,6 +34,30 @@ PROTECTED_COLUMNS = {
 }
 
 
+def resolve_positive_weight(config: dict, y_train: np.ndarray | None = None) -> float:
+    """Resolve positive_weight from config, computing from data if 'auto'.
+
+    Args:
+        config: Full config dict
+        y_train: Training labels (required if weight is 'auto')
+
+    Returns:
+        Numeric positive weight
+    """
+    weight = config.get("imbalance", {}).get("positive_weight", 10)
+    if weight == "auto" and y_train is not None:
+        n_neg = np.sum(y_train == 0)
+        n_pos = np.sum(y_train == 1)
+        if n_pos > 0:
+            weight = float(n_neg / n_pos)
+        else:
+            weight = 1.0
+        logger.info(f"Auto class weight: {weight:.2f} (neg={n_neg}, pos={n_pos})")
+    elif weight == "auto":
+        weight = 4.0  # reasonable fallback
+    return float(weight)
+
+
 def get_feature_columns(df: pd.DataFrame) -> list[str]:
     """Return numeric feature columns, excluding protected metadata columns.
 
@@ -157,7 +181,7 @@ def train_lgbm(
         Trained LightGBM Booster
     """
     config = config or {}
-    positive_weight = config.get("imbalance", {}).get("positive_weight", 10)
+    positive_weight = resolve_positive_weight(config, y_train)
     early_stopping = config.get("lightgbm", {}).get("early_stopping_rounds", 50)
 
     full_params = {
@@ -205,7 +229,7 @@ def train_xgb(
         Trained XGBoost Booster
     """
     config = config or {}
-    positive_weight = config.get("imbalance", {}).get("positive_weight", 10)
+    positive_weight = resolve_positive_weight(config, y_train)
     early_stopping = config.get("xgboost", {}).get("early_stopping_rounds", 50)
 
     full_params = {
