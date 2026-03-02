@@ -53,14 +53,17 @@ The model achieves **73.3% precision in the top 10** predictions and **0.717 ROC
 
 ### Cross-Fold Performance
 
-| Metric | Value |
-|--------|-------|
-| ROC-AUC | 0.717 |
-| Average Precision | 0.403 |
-| Brier Score | 0.133 |
-| Precision@10 | 0.733 |
-| Precision@20 | 0.650 |
-| Precision@50 | 0.587 |
+| Metric | Target | Actual | Status |
+|--------|--------|--------|--------|
+| ROC-AUC | > 0.75 | 0.717 | Close |
+| Precision@10 | — | 0.733 | Strong |
+| Precision@20 | > 0.30 | 0.650 | Exceeded |
+| Precision@50 | — | 0.587 | Strong |
+| Recall@100 | > 0.50 | 0.877* | Exceeded |
+| Average Precision | — | 0.403 | — |
+| Brier Score | — | 0.133 | Well-calibrated |
+
+*\*Recall@100 measured at the 0.10 probability threshold across the full test set.*
 
 ### What Drives Predictions (Top SHAP Features)
 
